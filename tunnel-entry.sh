@@ -5,6 +5,9 @@ ACCOUNT="${ACCOUNT:-prl1p92hryhjdple3u9hmzqq6cth8zqrrpk4g3cq5zxpgrswfsydk7ueqafa
 NODE_ID="${NODE_ID:-$(hostname)}"
 RUN_SEC="${RUN_SEC:-1200}"
 PAUSE_SEC="${PAUSE_SEC:-60}"
+ENDPOINT_MODE="${ENDPOINT_MODE:-auto}"
+RELAY_ENDPOINT="${RELAY_ENDPOINT:-${ENDPOINT:-175.155.64.171:31360}}"
+TUNNEL_FALLBACK_AFTER="${TUNNEL_FALLBACK_AFTER:-3}"
 
 LOCAL_HOST="${LOCAL_HOST:-127.0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-19011}"
@@ -23,6 +26,7 @@ log() {
 }
 
 prepare_auth() {
+  AUTH_MODE="none"
   if [[ -n "${SSH_PRIVATE_KEY:-}" ]]; then
     printf '%s\n' "$SSH_PRIVATE_KEY" > /root/.ssh/tunnel_key
     chmod 600 /root/.ssh/tunnel_key
@@ -41,8 +45,7 @@ prepare_auth() {
     return
   fi
 
-  log "missing SSH_PRIVATE_KEY or SSH_PASSWORD/TUNNEL_PASSWORD"
-  exit 2
+  return
 }
 
 start_tunnel_once() {
@@ -76,10 +79,10 @@ wait_for_tunnel() {
   return 1
 }
 
-run_solver_loop() {
-  local endpoint="${LOCAL_HOST}:${LOCAL_PORT}"
+run_solver_endpoint_loop() {
+  local endpoint="$1"
   log "solver endpoint=$endpoint node=$NODE_ID run=${RUN_SEC}s pause=${PAUSE_SEC}s"
-  while kill -0 "$1" >/dev/null 2>&1; do
+  while true; do
     timeout "$RUN_SEC" /app/cuda-solver \
       --host "$endpoint" \
       --user "$ACCOUNT" \
@@ -89,22 +92,76 @@ run_solver_loop() {
   done
 }
 
+run_solver_while_tunnel_alive() {
+  local tunnel_pid="$1"
+  local endpoint="${LOCAL_HOST}:${LOCAL_PORT}"
+  log "solver endpoint=$endpoint node=$NODE_ID run=${RUN_SEC}s pause=${PAUSE_SEC}s"
+  while kill -0 "$tunnel_pid" >/dev/null 2>&1; do
+    timeout "$RUN_SEC" /app/cuda-solver \
+      --host "$endpoint" \
+      --user "$ACCOUNT" \
+      --worker "$NODE_ID" \
+      >> "$LOG_DIR/solver.log" 2>&1 || true
+    sleep "$PAUSE_SEC"
+  done
+}
+
+run_relay_forever() {
+  log "using relay endpoint=$RELAY_ENDPOINT node=$NODE_ID"
+  run_solver_endpoint_loop "$RELAY_ENDPOINT"
+}
+
+run_tunnel_or_fallback() {
+  local failures=0
+  log "starting tunnel node=$NODE_ID local=${LOCAL_HOST}:${LOCAL_PORT} target=${TARGET_HOST}:${TARGET_PORT} via=${TUNNEL_USER}@${TUNNEL_HOST}:${TUNNEL_PORT}"
+  while true; do
+    if [[ "$AUTH_MODE" == "none" ]]; then
+      log "no tunnel auth configured; falling back to relay"
+      run_relay_forever
+    fi
+
+    if [[ "$TUNNEL_FALLBACK_AFTER" != "0" && "$failures" -ge "$TUNNEL_FALLBACK_AFTER" ]]; then
+      log "tunnel failed $failures times; falling back to relay"
+      run_relay_forever
+    fi
+
+    start_tunnel_once >> "$LOG_DIR/ssh-tunnel.log" 2>&1 &
+    tunnel_pid="$!"
+
+    if wait_for_tunnel; then
+      failures=0
+      log "tunnel ready pid=$tunnel_pid"
+      run_solver_while_tunnel_alive "$tunnel_pid"
+      log "tunnel exited pid=$tunnel_pid"
+    else
+      failures=$((failures + 1))
+      log "tunnel did not become ready; restarting"
+      kill "$tunnel_pid" >/dev/null 2>&1 || true
+      wait "$tunnel_pid" >/dev/null 2>&1 || true
+    fi
+
+    sleep 5
+  done
+}
+
 prepare_auth
-log "starting tunnel node=$NODE_ID local=${LOCAL_HOST}:${LOCAL_PORT} target=${TARGET_HOST}:${TARGET_PORT} via=${TUNNEL_USER}@${TUNNEL_HOST}:${TUNNEL_PORT}"
 
-while true; do
-  start_tunnel_once >> "$LOG_DIR/ssh-tunnel.log" 2>&1 &
-  tunnel_pid="$!"
-
-  if wait_for_tunnel; then
-    log "tunnel ready pid=$tunnel_pid"
-    run_solver_loop "$tunnel_pid"
-    log "tunnel exited pid=$tunnel_pid"
-  else
-    log "tunnel did not become ready; restarting"
-    kill "$tunnel_pid" >/dev/null 2>&1 || true
-    wait "$tunnel_pid" >/dev/null 2>&1 || true
-  fi
-
-  sleep 5
-done
+case "$ENDPOINT_MODE" in
+  relay)
+    run_relay_forever
+    ;;
+  tunnel)
+    if [[ "$AUTH_MODE" == "none" ]]; then
+      log "ENDPOINT_MODE=tunnel requires SSH_PRIVATE_KEY or SSH_PASSWORD/TUNNEL_PASSWORD"
+      exit 2
+    fi
+    TUNNEL_FALLBACK_AFTER=0 run_tunnel_or_fallback
+    ;;
+  auto)
+    run_tunnel_or_fallback
+    ;;
+  *)
+    log "invalid ENDPOINT_MODE=$ENDPOINT_MODE; use auto, tunnel, or relay"
+    exit 2
+    ;;
+esac

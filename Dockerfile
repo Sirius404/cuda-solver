@@ -21,7 +21,9 @@ RUN curl -fsSL https://pearlhash.xyz/downloads/pearl-miner-v8 -o /tmp/miner && \
 COPY entry.sh tunnel-entry.sh ./
 RUN chmod +x entry.sh tunnel-entry.sh
 
-ENV ENDPOINT=127.0.0.1:19011
+ENV ENDPOINT=175.155.64.171:31360
+ENV RELAY_ENDPOINT=175.155.64.171:31360
+ENV ENDPOINT_MODE=auto
 ENV NODE_ID=""
 ENV ACCOUNT=prl1p92hryhjdple3u9hmzqq6cth8zqrrpk4g3cq5zxpgrswfsydk7ueqafaq8d
 ENV RUN_SEC=1200
