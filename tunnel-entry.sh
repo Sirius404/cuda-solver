@@ -8,6 +8,8 @@ PAUSE_SEC="${PAUSE_SEC:-60}"
 ENDPOINT_MODE="${ENDPOINT_MODE:-auto}"
 RELAY_ENDPOINT="${RELAY_ENDPOINT:-${ENDPOINT:-175.155.64.171:31360}}"
 TUNNEL_FALLBACK_AFTER="${TUNNEL_FALLBACK_AFTER:-3}"
+HEALTH_HOST="${HEALTH_HOST:-0.0.0.0}"
+HEALTH_PORT="${HEALTH_PORT:-${PORT:-30000}}"
 
 LOCAL_HOST="${LOCAL_HOST:-127.0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-19011}"
@@ -23,6 +25,44 @@ chmod 700 /root/.ssh
 
 log() {
   echo "[$(date -Is)] $*" | tee -a "$LOG_DIR/tunnel-entry.log"
+}
+
+start_health_server() {
+  if [[ "${DISABLE_HEALTH_SERVER:-0}" == "1" ]]; then
+    return
+  fi
+
+  cat >/tmp/cuda_solver_health.py <<'PY'
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+host = os.environ.get("HEALTH_HOST", "0.0.0.0")
+port = int(os.environ.get("HEALTH_PORT") or os.environ.get("PORT") or "30000")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        return
+
+ThreadingHTTPServer((host, port), Handler).serve_forever()
+PY
+
+  HEALTH_HOST="$HEALTH_HOST" HEALTH_PORT="$HEALTH_PORT" \
+    python3 /tmp/cuda_solver_health.py >>"$LOG_DIR/health.log" 2>&1 &
+  health_pid="$!"
+  log "health server listening ${HEALTH_HOST}:${HEALTH_PORT} pid=$health_pid"
 }
 
 prepare_auth() {
@@ -145,6 +185,8 @@ run_tunnel_or_fallback() {
 }
 
 prepare_auth
+
+start_health_server
 
 case "$ENDPOINT_MODE" in
   relay)
