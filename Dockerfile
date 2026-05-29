@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 && \
     rm -rf /var/lib/apt/lists/*
